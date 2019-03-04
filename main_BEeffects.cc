@@ -1,28 +1,15 @@
-// main113.cc is a part of the PYTHIA event generator.
-// Copyright (C) 2018 Torbjorn Sjostrand.
+// main_BEeffects.cc is a part of the PYTHIA event generator.
+// Copyright (C) 2019 Torbjorn Sjostrand.
 // PYTHIA is licenced under the GNU GPL v2 or later, see COPYING for details.
 // Please respect the MCnet Guidelines, see GUIDELINES for details.
-
-// This test program will generate Pb-Pb collisions at
-// sqrt(S_NN)=2.76TeV using the Angantyr model for Heavy Ion
-// collisions. The analysis will divide the event in centrality
-// classes using the same observable as was used for p-Pb in the ATLAS
-// analysis in arXiv:1508.00848 [hep-ex] (see main112.cc). The
-// centrality classes are same as in the ALICE analysis in
-// arXiv:1012.1657 [nucl-ex] although the actual observable used is
-// not the same. Histograms of multiplicity distributions are measured
-// for each centrality percentile.
-
-// Note that heavy ion collisions are computationally quite CPU
-// intensive and generating a single event will take around a second
-// on a reasonable desktop. To get reasonable statistics, this program
-// will take a couple of hours to run.
 
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <algorithm>
+#include <vector>
 
 #include "Pythia8/Pythia.h"
 
@@ -32,6 +19,15 @@
 
 using namespace Pythia8;
 using namespace std;
+
+vector<int> get_centrality_limits(
+			const double centrality_class_lower_limit,
+			const double centrality_class_upper_limit,
+			const int n_events_to_use, Pythia & pythia );
+
+void print_particle_record(
+		int iEvent, vector<Particle> & particles_to_output,
+		ofstream & record_stream );
 
 int main(int argc, char *argv[])
 {
@@ -57,13 +53,13 @@ int main(int argc, char *argv[])
 		  };
 
 	// Turn on tracking of space-time information
-	//pythia.readString("Fragmentation:setVertices = on");
+	pythia.readString("Fragmentation:setVertices = on");
 	//pythia.readString("PartonVertex:setVertex = on");
 
 	if (argc != 7)
 	{
 		cerr << "Incorrect number of arguments!" << endl;
-		cerr << "Usage: ./main_testBEeffects [Projectile nucleus] [Target nucleus] [Beam energy in GeV]"
+		cerr << "Usage: ./main_BEeffects [Projectile nucleus] [Target nucleus] [Beam energy in GeV]"
 				<< " [Number of events] [Results directory] [QRef]" << endl;
 		exit(8);
 	}
@@ -135,14 +131,30 @@ int main(int argc, char *argv[])
 
 	int count = 0;
 
+	// Estimate centrality class limits
+	const int n_events_to_use = 10000;
+	const double centrality_class_lower_limit = 0.0;
+	const double centrality_class_upper_limit = 10.0;
+	vector<int> centrality_limits
+		= get_centrality_limits(
+			centrality_class_lower_limit,
+			centrality_class_upper_limit,
+			n_events_to_use, pythia );
+
+	const int multiplicity_lower_limit = centrality_limits[0];
+	const int multiplicity_upper_limit = centrality_limits[1];
+
 	// Loop over events.
-	for ( int iEvent = 0; iEvent < total_number_of_events; ++iEvent )
+	int iEvent = 0;
+	do
 	{
 		if ( !pythia.next() )
 			continue;
 
 		int event_multiplicity = 0;
 		int pion_multiplicity = 0;
+
+		vector<Particle> particles_to_output;
 
 		for (int i = 0; i < pythia.event.size(); ++i)
 		{
@@ -152,11 +164,10 @@ int main(int argc, char *argv[])
 				//count all final hadrons in multiplicity
 				event_multiplicity++;
 
-				// p.status() < 91 means p is not decay particle
 		 		if ( p.id() == 211 )	// i.e., is pi^+
 				{
 					// i.e., only do it once
-					if (count < 1)
+					if ( count < 1 )
 					{
 						ofstream out(path + "HBT_particle.dat");
 						out << "name = " << pythia.event[i].name()
@@ -175,22 +186,22 @@ int main(int argc, char *argv[])
 						++count;
 					}
 
-		 			outmain
-		 				<< iEvent << "   " << i
-		 				<< "   " << p.e()
-		 				<< "   " << p.px()
-		 				<< "   " << p.py()
-		 				<< "   " << p.pz()
-		 				<< "   " << p.tProd()
-		 				<< "   " << p.xProd()
-		 				<< "   " << p.yProd()
-		 				<< "   " << p.zProd()
-		 				<< endl;
+					particles_to_output.push_back( p );
 
 					pion_multiplicity++;
 				}
 			}
 		}
+
+		bool event_in_chosen_centrality_class
+			= ( event_multiplicity >= multiplicity_lower_limit)
+				and ( event_multiplicity <= multiplicity_upper_limit);
+
+		// only save this event if N^{ch} is correct range
+		if ( not event_in_chosen_centrality_class )
+			continue;
+
+		print_particle_record( iEvent, particles_to_output, outmain );
 
 		// If too many events for single file, set-up new file here
 		if ( (iEvent + 1) % max_events_per_file == 0
@@ -212,7 +223,10 @@ int main(int argc, char *argv[])
 		outMultiplicities << iEvent << "   "
 					<< event_multiplicity << "   "
 					<< pion_multiplicity << endl;
-	}
+
+		++iEvent;
+
+	} while ( iEvent < total_number_of_events );
 
 	outmain.close();
 	outMultiplicities.close();
@@ -221,3 +235,97 @@ int main(int argc, char *argv[])
 	// And we're done!
 	return 0;
 }
+
+
+
+
+
+
+
+
+
+bool decreasing (int i,int j) { return (i>j); }
+
+
+vector<int> get_centrality_limits(
+			const double centrality_class_lower_limit,
+			const double centrality_class_upper_limit,
+			const int n_events_to_use, Pythia & pythia )
+{
+	int iEvent = 0;
+	vector<int> event_multiplicities;
+
+	vector<int> results(2);
+
+	// if we're just doing all the events, no matter what
+	if ( centrality_class_lower_limit < 1.e-6
+			and 100.0 - centrality_class_upper_limit < 1.e-6 )
+	{
+		results[0] = 0;
+		results[1] = 1e+9;
+	}
+	else
+	{
+		do
+		{
+			if ( !pythia.next() )
+				continue;
+
+			int event_multiplicity = 0;
+
+			for (int i = 0; i < pythia.event.size(); ++i)
+			{
+				Particle & p = pythia.event[i];
+				if ( p.isFinal() and p.isHadron() )
+				{
+					//count all final hadrons in multiplicity
+					//to estimate centrality
+					event_multiplicity++;
+				}
+			}
+
+			event_multiplicities.push_back( event_multiplicity );
+
+			++iEvent;
+
+		} while ( iEvent < n_events_to_use );
+
+		sort( event_multiplicities.begin(), event_multiplicities.end(), decreasing );
+
+		int lower_index = max( 0, (int)floor( 0.01*centrality_class_lower_limit*n_events_to_use+0.5 ) );
+		int upper_index = min( n_events_to_use - 1, (int)floor( 0.01*centrality_class_upper_limit*n_events_to_use+0.5 ) );
+		results[0] = event_multiplicities[upper_index];	//smaller multiplicity limit first
+		results[1] = event_multiplicities[lower_index];	//larger multiplicity limit second
+	}
+
+	return ( results );
+}
+
+
+
+
+void print_particle_record(
+		int iEvent, vector<Particle> & particles_to_output,
+		ofstream & record_stream )
+{
+	for (int i = 0; i < (int)particles_to_output.size(); ++i)
+	{
+		Particle & p = particles_to_output[i];
+
+		record_stream
+			<< iEvent << "   " << i
+			<< "   " << p.e()
+			<< "   " << p.px()
+			<< "   " << p.py()
+			<< "   " << p.pz()
+			<< "   " << p.tProd()
+			<< "   " << p.xProd()
+			<< "   " << p.yProd()
+			<< "   " << p.zProd()
+			<< endl;
+	}
+
+	return;
+}
+
+// End of file
